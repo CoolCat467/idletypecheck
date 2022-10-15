@@ -323,9 +323,9 @@ class idletypecheck:# pylint: disable=invalid-name
                     'message': f'{data[2]}: {data[3]}'
                 }
 
-                if not filename in files:
-                    files[filename] = []
-                files[filename].append(message)
+            if not filename in files:
+                files[filename] = []
+            files[filename].append(message)
 
         # Only handling messages for target filename
         line_data: dict[int, list] = {}
@@ -354,20 +354,9 @@ class idletypecheck:# pylint: disable=invalid-name
         comments = []
         for line in line_order:
             messages = line_data[line]
-
-            order = ['error', 'note']
-            for msg in messages:
-                if not msg['type'] in order:
-                    order.append(msg['type'])
-
-            ordered = []
-            for msg_type in reversed(order):
-                for msg in messages:
-                    if msg['type'] == msg_type:
-                        ordered.append(msg)
-
-            total = len(ordered)
-            for message in ordered:
+            
+            total = len(messages)
+            for message in reversed(messages):
                 if self.add_comment(message, total):
                     comments.append(line)
         return comments

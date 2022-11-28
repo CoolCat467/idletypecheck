@@ -23,9 +23,9 @@ import sys
 from functools import wraps
 from tkinter   import messagebox, Event, Tk
 
-from idlelib         import search, searchengine # type: ignore
-from idlelib.config  import idleConf             # type: ignore
-from idlelib.pyshell import PyShellEditorWindow  # type: ignore
+from idlelib         import search, searchengine
+from idlelib.config  import idleConf
+from idlelib.pyshell import PyShellEditorWindow
 
 _HAS_MYPY = True
 try:
@@ -34,47 +34,58 @@ except ImportError:
     print(f'{__file__}: Mypy not installed!')
     _HAS_MYPY = False
 
+def get_required_config(values: dict[str, str], bind_defaults: dict[str, str]) -> str:
+    "Get required configuration file data"
+    config = ''
+    # Get configuration defaults
+    settings = '\n'.join(f'{key} = {default}' for key, default in values.items())
+    if settings:
+        config += f"\n[{__title__}]\n{settings}"
+        if bind_defaults:
+            config += '\n'
+    # Get key bindings data
+    settings = '\n'.join(f'{event} = {key}' for event, key in bind_defaults.items())
+    if settings:
+        config += f"\n[{__title__}_cfgBindings]\n{settings}"
+    return config
+
 def check_installed() -> bool:
     "Make sure extension installed."
     # Get list of system extensions
     extensions = list(idleConf.defaultCfg['extensions'])
+    ex_defaults = idleConf.defaultCfg['extensions'].file
+
+    # Import this extension (this file),
+    try:
+        module = __import__(__title__)
+    except ModuleNotFoundError:
+        print(f'{__title__} is not installed!')
+        return False
+
+    # Get extension class
+    if not hasattr(module, __title__):
+        print(f'ERROR: Somehow, {__title__} was installed improperly, no {__title__} class '\
+              'found in module. Please report this on github.', file=sys.stderr)
+        sys.exit(1)
+
+    cls = getattr(module, __title__)
+
+    # Get extension class keybinding defaults
+    required_config = get_required_config(
+        getattr(cls, 'values', {}),
+        getattr(cls, 'bind_defaults', {})
+    )
+
     # If this extension not in there,
     if __title__ not in extensions:
         # Tell user how to add it to system list.
         print(f'{__title__} not in system registered extensions!')
         print(f'Please run the following command to add {__title__} to system extensions list.\n')
-        ex_defaults = idleConf.defaultCfg['extensions'].file
-
-        # Import this extension (this file),
-        try:
-            module = __import__(__title__)
-        except ModuleNotFoundError:
-            print(f'{__title__} is not installed!')
-            return False
-        # Get extension class
-        if hasattr(module, __title__):
-            cls = getattr(module, __title__)
-            # Get extension class keybinding defaults
-            add_data = ''
-            if hasattr(cls, 'values'):
-                # Get configuration defaults
-                values = '\n'.join(f'{key} = {default}' for key, default in cls.values.items())
-                # Add to add_data
-                add_data += f"\n[{__title__}]\n{values}"
-            if hasattr(cls, 'bind_defaults'):
-                # Get keybindings data
-                values = '\n'.join(f'{event} = {key}' for event, key in cls.bind_defaults.items())
-                # Add to add_data
-                add_data += f"\n[{__title__}_cfgBindings]\n{values}"
-            # Make sure line-breaks will go properly in terminal
-            add_data = add_data.replace('\n', '\\n')
-            # Tell them command
-            print(f"echo -e '{add_data}' | sudo tee -a {ex_defaults}")
-            print()
-        else:
-            print(f'ERROR: Somehow, {__title__} was installed improperly, no {__title__} class '\
-                  'found in module. Please report this on github.', file=sys.stderr)
-            sys.exit(1)
+        # Make sure line-breaks will go properly in terminal
+        add_data = required_config.replace('\n', '\\n')
+        # Tell them command
+        print(f"echo -e '{add_data}' | sudo tee -a {ex_defaults}")
+        print()
     else:
         print(f'Configuration should be good! (v{__version__})')
         return True
@@ -83,6 +94,12 @@ def check_installed() -> bool:
 def get_line_selection(line: int) -> tuple[str, str]:
     "Get selection strings for given line"
     return f'{line}.0', f'{line+1}.0'
+
+# Stolen from idlelib.searchengine
+def get_line_col(index: str) -> tuple[int, int]:
+    "Return (line, col) tuple of ints from 'line.col' string."
+    line, col = map(int, index.split('.', 1)) # Fails on invalid index
+    return line, col
 
 def get_line_indent(text: str, char: str=' ') -> int:
     "Return line indent."
@@ -170,7 +187,7 @@ class idletypecheck:# pylint: disable=invalid-name
         'extra_args'   : 'None',
         'search_wrap'  : 'False'
     }
-    # Default keybinds for configuration file
+    # Default key binds for configuration file
     bind_defaults = {
         'type-check'            : '<Alt-Key-t>',
         'remove-type-comments'  : '<Alt-Shift-Key-T>',
@@ -235,6 +252,10 @@ class idletypecheck:# pylint: disable=invalid-name
 ##        save = cls.ensure_config_exists()
 ##        if cls.ensure_bindings_exist() or save:
 ##            idleConf.SaveUserCfgFiles()
+
+        # Reload config file
+        idleConf.LoadCfgFiles()
+
         # For all possible configuration values
         for key, default in cls.values.items():
             # Set attribute of key name to key value from configuration file
@@ -291,44 +312,86 @@ class idletypecheck:# pylint: disable=invalid-name
         self.text.insert(start, chars, None)
         return True
 
-    def add_comments(self,
-                     target_filename: str,
-                     normal: str,
-                     error: str) -> list[int]:
-        "Add comments for target filename, return list of comments added"
+    @staticmethod
+    def parse_comments(comments: str,
+                       default_file: str,
+                       default_line: int) -> dict[str, list[dict[str, Any]]]:
+        "Get list of message dictionaries from mypy output."
         files: dict[str, list[dict[str, Any]]] = {}
-        start_line = self.editwin.getlineno()
-        for comment in error.splitlines() + normal.splitlines():
-            filename: str
-            message: dict[str, Any]
-            if not comment.count(':') >= 3:
-                filename = os.path.abspath(self.files.filename)
-                message = {
-                    'file': filename,
-                    'line': start_line,
-                    'type': 'other',
-                    'message': comment
-                }
-            else:
-                data = comment.split(':', 3)
-                # fix type, ex. ' error' -> 'error'
-                for i in range(2, len(data)):
-                    data[i] = data[i][1:]
+        for comment in comments.splitlines():
+            filename = default_file
+            line     = default_line
+            col      = 0
+            mtype    = 'unrecognized'
 
-                filename = os.path.abspath(data[0])
-                message = {
-                    'file': filename,
-                    'line': int(data[1]),
-                    'type': data[2],
-                    'message': f'{data[2]}: {data[3]}'
-                }
+            if comment.count(': ') < 2:
+                text = comment
+            else:
+                where, mtype, text = comment.split(': ', 2)
+
+                position = where.split(':')
+
+                filename = position[0]
+                if len(position) > 1:
+                    line = int(position[1])
+                if len(position) > 2:
+                    col = int(position[2])
+
+            message: dict[str, Any] = {
+                'file'   : filename,
+                'line'   : line,
+                'column' : col,
+                'type'   : mtype,
+                'message': f'{mtype}: {text}'
+            }
 
             if not filename in files:
                 files[filename] = []
             files[filename].append(message)
+        return files
+
+    def get_pointers(self, messages: list[dict[str, int | str]]) -> None | dict[str, int | str]:
+        "Return message pointing to message column position"
+        line = int(messages[0]['line'])+1
+
+        # Figure out line intent
+        indent = get_line_indent(self.get_line(line))
+
+        columns: list[int] = []
+        for message in messages:
+            columns.append(int(message['column']))
+
+        lastcol = len(self.comment) + indent + 1
+        new_line = ''
+        for col in sorted(frozenset(columns)):
+            if col < lastcol:
+                continue
+            spaces = col - lastcol
+            new_line += ' '*spaces + '^'
+            lastcol = col+1
+
+        if not new_line.strip():
+            return None
+
+        return {
+            'line'   : line,
+            'message': new_line
+        }
+
+    def add_comments(self,
+                     target_filename: str,
+                     normal: str) -> list[int]:
+        "Add comments for target filename, return list of comments added"
+        start_line: int = self.editwin.getlineno()
+
+        files = self.parse_comments(
+            normal,
+            os.path.abspath(self.files.filename),
+            start_line
+        )
 
         # Only handling messages for target filename
-        line_data: dict[int, list] = {}
+        line_data: dict[int, list[dict[str, Any]]] = {}
         if target_filename in files:
             for message in files[target_filename]:
                 line: int = message['line']
@@ -345,16 +408,20 @@ class idletypecheck:# pylint: disable=invalid-name
 
         for filename in {f for f in files if f != target_filename}:
             line_data[first].append({
-                'file': target_filename,
-                'line': first,
-                'type': 'note',
+                'file'   : target_filename,
+                'line'   : first,
+                'column' : 0,
+                'type'   : 'note',
                 'message': f'Another file has errors: {filename}'
             })
 
         comments = []
         for line in line_order:
             messages = line_data[line]
-            
+            pointers = self.get_pointers(messages)
+            if pointers is not None:
+                messages.append(pointers)
+
             total = len(messages)
             for message in reversed(messages):
                 if self.add_comment(message, total):
@@ -373,7 +440,7 @@ class idletypecheck:# pylint: disable=invalid-name
         return confirm
 
     @undo_block
-    def type_check_event(self, event: Event) -> str:
+    def type_check_event(self, event: Event[Any]) -> str:
         "Preform a mypy check and add comments."
         self.reload()
 
@@ -405,7 +472,14 @@ class idletypecheck:# pylint: disable=invalid-name
             self.files.save(event)
 
         # Get arguments
-        args = [file, '--cache-dir', self.mypy_folder]
+        args = [
+            file,
+            '--cache-dir', self.mypy_folder,
+            '--cache-fine-grained',
+            '--hide-error-context',
+            '--no-color-output',
+            '--show-absolute-path'
+        ]
         if self.extra_args != 'None':
             if ' ' in self.extra_args:
                 args += self.extra_args.split(' ')
@@ -415,16 +489,29 @@ class idletypecheck:# pylint: disable=invalid-name
         # Run mypy on open file
         normal, errors, file_count = mypy.api.run(args)# pylint: disable=c-extension-no-member
 
+        if errors:
+            lines = errors.splitlines()
+            lines[0] = f'Error running mypy: {lines[0]}'
+            for message in reversed(lines):
+                self.add_comment({
+                    'file': file,
+                    'line': start_line_no,
+                    'message': message,
+                }, len(lines))
+
+            self.text.bell()
+            return 'break'
+
         if file_count:
             # Add code comments
-            self.add_comments(file, normal, errors)
+            self.add_comments(file, normal)
 
         # Make bell sound so user knows we are done,
         # as it freezes a bit while mypy looks at the file
         self.text.bell()
         return 'break'
 
-    def remove_type_comments_event(self, event: Event) -> str:
+    def remove_type_comments_event(self, event: Event[Any]) -> str:
         "Remove selected mypy comments."
         # Get selected region lines
         head, tail, chars, lines = self.formatter.get_region()
@@ -437,21 +524,43 @@ class idletypecheck:# pylint: disable=invalid-name
         ldict = dict(enumerate(lines))
         for idx in sorted(ldict.keys(), reverse=True):
             line = ldict[idx]
-            # Get line indent, see if after indent there is mypy comment
-            indent = get_line_indent(line)
-            if line[indent:].startswith(self.comment):
+            # If after indent there is mypy comment
+            if line.lstrip().startswith(self.comment):
                 # If so, remove line
                 del lines[idx]
         # Apply changes
         self.formatter.set_region(head, tail, chars, lines)
         return 'break'
 
-    def find_next_type_comment_event(self, event: Event) -> str:
+    @undo_block
+    def remove_all_type_comments(self, event: Event[Any]) -> str:
+        "Remove all mypy comments."
+        eof_idx = self.text.index('end')
+
+        chars = self.text.get('0.0', eof_idx)
+
+        lines = chars.splitlines()
+        modified = False
+        for idx in reversed(range(len(lines))):
+            if lines[idx].lstrip().startswith(self.comment):
+                del lines[idx]
+                modified = True
+        if not modified:
+            return 'break'
+
+        chars = '\n'.join(lines)
+
+        # Apply changes
+        self.text.delete('0.0', eof_idx)
+        self.text.insert('0.0', chars, None)
+        return 'break'
+
+    def find_next_type_comment_event(self, event: Event[Any]) -> str:
         "Find next comment by hacking the search dialog engine."
         self.reload()
 
         root: Tk
-        root = self.text._root()# type: ignore # pylint: disable=protected-access
+        root = self.text._root()# pylint: disable=protected-access
 
         # Get search engine singleton from root
         engine: searchengine.SearchEngine = searchengine.get(root)
@@ -461,7 +570,7 @@ class idletypecheck:# pylint: disable=invalid-name
 
         # Set search pattern to comment starter
         set_search_engine_params(engine, {
-            'pat' : f'\s*{self.comment}',# pylint: disable=anomalous-backslash-in-string
+            'pat' : f'^\\s*{self.comment}',
             're'  : True,
             'case': True,
             'word': False,

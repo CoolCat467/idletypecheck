@@ -1,5 +1,12 @@
 # IdleTypeCheck
-Python IDLE extension to preform mypy analysis on an open file
+Python IDLE extension to perform mypy analysis on an open file
+
+<!-- BADGIE TIME -->
+
+[![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit)](https://github.com/pre-commit/pre-commit)
+[![code style: black](https://img.shields.io/badge/code_style-black-000000.svg)](https://github.com/psf/black)
+
+<!-- END BADGIE TIME -->
 
 ## Installation
 1) Go to terminal and install with `pip install idletypecheck`.

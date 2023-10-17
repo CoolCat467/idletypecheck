@@ -30,6 +30,9 @@ dependencies = [
     "mypy~=1.6.0",
 ]
 
+[project.optional-dependencies]
+user = ["idleuserextend~=0.0.0"]
+
 [project.urls]
 "Homepage" = "https://github.com/CoolCat467/idletypecheck"
 "Source" = "https://github.com/CoolCat467/idletypecheck"
@@ -37,6 +40,9 @@ dependencies = [
 
 [project.scripts]
 idletypecheck = "idletypecheck:check_installed"
+
+[tool.setuptools.package-data]
+idletypecheck = ["py.typed"]
 
 [tool.mypy]
 mypy_path = "src"

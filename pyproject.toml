@@ -93,18 +93,39 @@ select = [
     "A",     # flake8-builtins
     "ASYNC", # flake8-async
     "B",     # flake8-bugbear
+    "C4",    # flake8-comprehensions
+    "COM",   # flake8-commas
+    "D",     # pydocstyle
     "E",     # Error
+    "EXE",   # flake8-executable
     "F",     # pyflakes
+    "FA",    # flake8-future-annotations
     "I",     # isort
+    "N",     # pep8-naming
+    "PIE",   # flake8-pie
+    "PT",    # flake8-pytest-style
+    "PYI",   # flake8-pyi
+    "Q",     # flake8-quotes
+    "RET",   # flake8-return
     "RUF",   # Ruff-specific rules
     "S",     # flake8-bandit
+    "SIM",   # flake8-simplify
+    "SLOT",  # flake8-slots
+    "TCH",   # flake8-type-checking
+    "TRIO",  # flake8-trio
     "UP",    # pyupgrade
     "W",     # Warning
     "YTT",   # flake8-2020
 ]
 extend-ignore = [
+    "D203",   # One blank line before class
+    "D204",   # blank line thing
+    "D211",   # no-blank-line-before-class
+    "D213",   # multi-line-summary-second-line
+    "D417",   # "Missing argument descriptions"
     "E501",   # line-too-long
     "S101",   # use of assert for tests and type narrowing
+    "SIM117", # Use multiple with statements at the same time
 ]
 
 [tool.ruff.lint.per-file-ignores]

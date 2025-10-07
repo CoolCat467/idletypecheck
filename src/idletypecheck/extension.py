@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 # Idle Type Check - Use mypy to type check open file, then add comments to file.
-# Copyright (C) 2024  CoolCat467
+# Copyright (C) 2023-2025  CoolCat467
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -26,23 +26,91 @@ __license__ = "GNU General Public License Version 3"
 
 import os
 import re
+import sys
 from idlelib.config import idleConf
 from idlelib.pyshell import PyShellEditorWindow
-from typing import TYPE_CHECKING, Any, ClassVar
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, ClassVar, Final
 
 import mypy.api
 
 from idletypecheck import utils
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from idlelib.pyshell import PyShellEditorWindow
     from tkinter import Event
+
+
+UNKNOWN_FILE: Final = "<unknown file>"
+MYPY_ERROR_TYPE: Final = re.compile(r"  \[([a-z\-]+)\]\s*$")
 
 
 def debug(message: object) -> None:
     """Print debug message."""
     # TODO: Censor username/user files
-    print(f"\n[{__title__}] DEBUG: {message}")
+    print(f"\n[{__name__}] DEBUG: {message}")
+
+
+def parse_comments(
+    mypy_output: str,
+    default_file: str = "<unknown file>",
+    default_line: int = 0,
+) -> dict[str, list[utils.Comment]]:
+    """Parse mypy output, return mapping of filenames to lists of comments."""
+    files: dict[str, list[utils.Comment]] = {}
+    for output_line in mypy_output.splitlines():
+        if not output_line.strip():
+            continue
+        filename = default_file
+        line = default_line
+        line_end = default_line
+        col = 0
+        col_end = 0
+        msg_type = "unrecognized"
+
+        if output_line.count(": ") < 2:
+            text = output_line
+        else:
+            where, msg_type, text = output_line.split(": ", 2)
+
+            windows_drive_letter = ""
+            if sys.platform == "win32":
+                windows_drive_letter, where = where.split(":", 1)
+                windows_drive_letter += ":"
+            position = where.rsplit(":", 4)
+
+            filename = f"{windows_drive_letter}{position[0]}"
+            colon_count = len(position)
+            if colon_count > 1:
+                line = int(position[1])
+                line_end = line
+            if colon_count > 2:
+                col = int(position[2])
+                col_end = col
+            if colon_count > 4:
+                line_end = int(position[3])
+                # if line_end == line:
+                col_end = int(position[4])
+                # else:
+                #    line_end = line
+        comment_type = MYPY_ERROR_TYPE.search(text)
+        if comment_type is not None:
+            text = text[: comment_type.start()]
+            msg_type = f"{comment_type.group(1)} {msg_type}"
+
+        comment = utils.Comment(
+            file=filename,
+            line=line,
+            contents=f"{msg_type}: {text}",
+            column=col,
+            line_end=line_end,
+            column_end=col_end,
+        )
+
+        files.setdefault(filename, [])
+        files[filename].append(comment)
+    return files
 
 
 # Important weird: If event handler function returns 'break',
@@ -55,17 +123,22 @@ class idletypecheck(utils.BaseExtension):  # noqa: N801
 
     __slots__ = ()
     # Extend the file and format menus.
-    menudefs: ClassVar = [
+    menudefs: ClassVar[
+        Sequence[tuple[str, Sequence[tuple[str, str] | None]]]
+    ] = (
         (
             "edit",
-            [
+            (
                 None,
                 ("_Type Check File", "<<type-check>>"),
                 ("Find Next Type Comment", "<<find-next-type-comment>>"),
-            ],
+            ),
         ),
-        ("format", [("Remove Type Comments", "<<remove-type-comments>>")]),
-    ]
+        (
+            "format",
+            (("Remove Type Comments", "<<remove-type-comments>>"),),
+        ),
+    )
     # Default values for configuration file
     values: ClassVar = {
         "enable": "True",
@@ -86,8 +159,8 @@ class idletypecheck(utils.BaseExtension):  # noqa: N801
     search_wrap = "False"
 
     # Class attributes
-    idlerc_folder = os.path.expanduser(idleConf.userdir)
-    mypy_folder = os.path.join(idlerc_folder, "mypy")
+    idlerc_folder = Path(idleConf.userdir).expanduser().absolute()
+    mypy_folder = idlerc_folder / "mypy"
 
     def __init__(self, editwin: PyShellEditorWindow) -> None:
         """Initialize the settings for this extension."""
@@ -106,13 +179,14 @@ class idletypecheck(utils.BaseExtension):  # noqa: N801
             "--no-error-summary",
             "--soft-error-limit=-1",
             "--show-traceback",
-            f"--cache-dir={self.mypy_folder}",
+            f'--cache-dir="{self.mypy_folder}"',
+            # f'--log-file="{self.log_file}"',
             # "--cache-fine-grained",
         }
         if self.extra_args == "None":
             return list(base)
         extra = set()
-        for arg in self.extra_args.split(" "):
+        for arg in self.extra_args.split():
             value = arg.strip()
             if value:
                 extra.add(value)
@@ -123,72 +197,15 @@ class idletypecheck(utils.BaseExtension):  # noqa: N801
         """Should only add type comments for currently open file?."""
         return True
 
-    @staticmethod
-    def parse_comments(
-        mypy_output: str,
-        default_file: str,
-        default_line: int,
-    ) -> dict[str, list[utils.Comment]]:
-        """Parse mypy output, return mapping of filenames to lists of comments."""
-        error_type = re.compile(r"  \[[a-z\-]+\]\s*$")
-
-        files: dict[str, list[utils.Comment]] = {}
-        for output_line in mypy_output.splitlines():
-            if not output_line.strip():
-                continue
-            filename = default_file
-            line = default_line
-            line_end = default_line
-            col = 0
-            col_end = 0
-            msg_type = "unrecognized"
-
-            if output_line.count(": ") < 2:
-                text = output_line
-            else:
-                where, msg_type, text = output_line.split(": ", 2)
-
-                position = where.split(":")
-
-                filename = position[0]
-                if len(position) > 1:
-                    line = int(position[1])
-                    line_end = line
-                if len(position) > 2:
-                    col = int(position[2])
-                    col_end = col
-                if len(position) > 4:
-                    line_end = int(position[3])
-                    if line_end == line:
-                        col_end = int(position[4])
-                    else:
-                        line_end = line
-            comment_type = error_type.search(text)
-            if comment_type is not None:
-                text = text[: comment_type.start()]
-                msg_type = f"{comment_type.group(0)[3:-1]} {msg_type}"
-
-            comment = utils.Comment(
-                file=filename,
-                line=line,
-                contents=f"{msg_type}: {text}",
-                column=col,
-                line_end=line_end,
-                column_end=col_end,
-            )
-
-            files.setdefault(filename, [])
-            files[filename].append(comment)
-        return files
-
     def add_type_comments_for_file(
         self,
-        target_filename: str,
         comments: list[utils.Comment],
     ) -> dict[str, list[int]]:
         """Add type comments for target files.
 
         Return list of lines were a comment was added.
+
+        Changes are wrapped in an undo block.
         """
         # Split up comments by line in order
         line_data: dict[int, list[utils.Comment]] = {}
@@ -213,41 +230,49 @@ class idletypecheck(utils.BaseExtension):  # noqa: N801
         start_line: int,
         mypy_output: str,
         only_filename: str | None = None,
+        add_all_override: bool = False,
     ) -> dict[str, list[int]]:
         """Add mypy comments for target filename.
 
         Return list of lines where comments were added.
-        """
-        assert self.files.filename is not None
 
-        files = self.parse_comments(
+        Changes are wrapped in an undo block.
+        """
+        default_file = UNKNOWN_FILE
+        if self.files.filename is not None:
+            default_file = os.path.abspath(self.files.filename)
+
+        if only_filename is not None:
+            only_filename = os.path.abspath(only_filename)
+
+        file_comments = parse_comments(
             mypy_output,
-            os.path.abspath(self.files.filename),
+            default_file,
             start_line,
         )
 
         file_commented_lines: dict[str, list[int]] = {}
 
-        to_comment = list(files)
+        to_comment = set(file_comments)
 
-        if self.typecomment_only_current_file:
+        if self.typecomment_only_current_file and not add_all_override:
             assert only_filename is not None
-            to_comment = [only_filename]
+            to_comment = {only_filename}
 
             # Find first line in target file or use start_line
-            if not files.get(only_filename):
+            if not file_comments.get(only_filename):
                 other_files_comment_line = start_line
             else:
                 other_files_comment_line = min(
-                    comment.line for comment in files[only_filename]
+                    comment.line for comment in file_comments[only_filename]
                 )
 
             # Add comments about how other files have errors
-            files.setdefault(only_filename, [])
-            for filename in files:
+            file_comments.setdefault(only_filename, [])
+            for filename in file_comments:
                 if filename == only_filename:
                     continue
-                files[only_filename].append(
+                file_comments[only_filename].append(
                     utils.Comment(
                         file=only_filename,
                         line=other_files_comment_line,
@@ -257,13 +282,14 @@ class idletypecheck(utils.BaseExtension):  # noqa: N801
                 )
 
         for target_filename in to_comment:
-            if target_filename not in files:
+            if target_filename not in file_comments:
                 continue
-            file_comments = self.add_type_comments_for_file(
-                target_filename,
-                files[target_filename],
+            if target_filename == UNKNOWN_FILE:
+                continue
+            file_comment_lines = self.add_type_comments_for_file(
+                file_comments[target_filename],
             )
-            file_commented_lines.update(file_comments)
+            file_commented_lines.update(file_comment_lines)
         return file_commented_lines
 
     def add_extra_data(
@@ -280,7 +306,9 @@ class idletypecheck(utils.BaseExtension):  # noqa: N801
         Tuple of:
         - Number of lines attempted to add
         - List of line numbers added that were not already there
-        otherwise None because no content.
+        otherwise empty because no content.
+
+        Changes are wrapped in an undo block.
 
         """
         if not data:
@@ -347,9 +375,6 @@ class idletypecheck(utils.BaseExtension):  # noqa: N801
         if raw_filename is None:
             return "break", None
         file: str = os.path.abspath(raw_filename)
-
-        # Remember where we started
-        self.editwin.getlineno()
 
         # Make sure file is saved.
         if not self.files.get_saved():

@@ -6,7 +6,7 @@ set -ex -o pipefail
 echo "::group::Environment"
 uname -a
 env | sort
-PROJECT='lintcheck'
+PROJECT='idletypecheck'
 echo "::endgroup::"
 
 
